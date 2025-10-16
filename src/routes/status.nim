@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-import asyncdispatch, strutils, sequtils, uri, options, sugar
+import asyncdispatch, strutils, sequtils, uri, options, sugar, json
 
 import jester, karax/vdom
 
@@ -14,6 +14,67 @@ export status
 
 proc createStatusRouter*(cfg: Config) =
   router status:
+    get "/api/@name/status/@id/?":
+      cond '.' notin @"name"
+      let id = @"id"
+
+      if id.len > 19 or id.any(c => not c.isDigit):
+        resp Http404, %*{"error": "Invalid tweet ID"}
+
+      let conv = await getTweet(id)
+      
+      if conv == nil or conv.tweet == nil or conv.tweet.id == 0:
+        var error = "Tweet not found"
+        if conv != nil and conv.tweet != nil and conv.tweet.tombstone.len > 0:
+          error = conv.tweet.tombstone
+        resp Http404, %*{"error": error}
+
+      let tweet = conv.tweet
+      var response = %* {
+        "author": {
+          "username": tweet.user.username,
+          "fullname": tweet.user.fullname,
+          "id": tweet.user.id
+        },
+        "text": stripHtml(tweet.text),
+        "id": $tweet.id,
+        "date": getTime(tweet)
+      }
+
+      # Add photos if present
+      if tweet.photos.len > 0:
+        response["photos"] = %tweet.photos
+
+      # Add video if present
+      if tweet.video.isSome():
+        let video = tweet.video.get()
+        var videoObj = %* {
+          "thumb": video.thumb,
+          "url": video.url,
+          "duration": video.durationMs,
+          "views": video.views
+        }
+        if video.variants.len > 0:
+          var variants = newJArray()
+          for variant in video.variants:
+            variants.add(%* {
+              "url": variant.url,
+              "contentType": $variant.contentType,
+              "bitrate": variant.bitrate
+            })
+          videoObj["variants"] = variants
+        response["video"] = videoObj
+
+      # Add gif if present
+      if tweet.gif.isSome():
+        let gif = tweet.gif.get()
+        response["gif"] = %* {
+          "url": gif.url,
+          "thumb": gif.thumb
+        }
+
+      respJson response
+
     get "/@name/status/@id/?":
       cond '.' notin @"name"
       let id = @"id"
