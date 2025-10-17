@@ -1,19 +1,84 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-import asyncdispatch, strutils, sequtils, uri, options, sugar
+import asyncdispatch, strutils, sequtils, uri, options, sugar, json
 
 import jester, karax/vdom
 
 import router_utils
 import ".."/[types, formatters, api]
 import ../views/[general, status]
+import ../utils
 
-export uri, sequtils, options, sugar
+export uri, sequtils, options, sugar, json
 export router_utils
 export api, formatters
 export status
 
 proc createStatusRouter*(cfg: Config) =
   router status:
+    get "/api/@name/status/@id/?":
+      cond '.' notin @"name"
+      let id = @"id"
+
+      if id.len > 19 or id.any(c => not c.isDigit):
+        resp Http404, showError("Invalid tweet ID", cfg)
+
+      let conv = await getTweet(id)
+
+      if conv == nil or conv.tweet == nil or conv.tweet.id == 0:
+        var error = "Tweet not found"
+        if conv != nil and conv.tweet != nil and conv.tweet.tombstone.len > 0:
+          error = conv.tweet.tombstone
+        resp Http404, showError(error, cfg)
+
+      let tweet = conv.tweet
+      var response = %* {
+        "author": {
+          "username": tweet.user.username,
+          "fullname": tweet.user.fullname,
+          "id": tweet.user.id
+        },
+        "text": stripHtml(tweet.text),
+        "id": $tweet.id,
+        "date": getTime(tweet)
+      }
+
+      # Add photos if present
+      if tweet.photos.len > 0:
+        var transformedPhotos = %* []
+        for photo in tweet.photos:
+          transformedPhotos.add(%*(getUrlPrefix(cfg) & getPicUrl(photo)))
+        response["photos"] = transformedPhotos
+
+      # Add video if present
+      if tweet.video.isSome():
+        let video = tweet.video.get()
+        var videoObj = %* {
+          "thumb": getUrlPrefix(cfg) & getPicUrl(video.thumb),
+          "url": video.url,
+          "duration": video.durationMs,
+          "views": video.views
+        }
+        if video.variants.len > 0:
+          var variants = %* []
+          for variant in video.variants:
+            variants.add(%* {
+              "url": variant.url,
+              "contentType": $variant.contentType,
+              "bitrate": variant.bitrate
+            })
+          videoObj["variants"] = variants
+        response["video"] = videoObj
+
+      # Add gif if present
+      if tweet.gif.isSome():
+        let gif = tweet.gif.get()
+        response["gif"] = %* {
+          "url": gif.url,
+          "thumb": getUrlPrefix(cfg) & getPicUrl(gif.thumb)
+        }
+
+      respJson response
+
     get "/@name/status/@id/?":
       cond '.' notin @"name"
       let id = @"id"
