@@ -6,8 +6,9 @@ import jester, karax/vdom
 import router_utils
 import ".."/[types, formatters, api]
 import ../views/[general, status]
+import ../utils
 
-export uri, sequtils, options, sugar
+export uri, sequtils, options, sugar, json
 export router_utils
 export api, formatters
 export status
@@ -19,15 +20,15 @@ proc createStatusRouter*(cfg: Config) =
       let id = @"id"
 
       if id.len > 19 or id.any(c => not c.isDigit):
-        resp Http404, %*{"error": "Invalid tweet ID"}
+        resp Http404, showError("Invalid tweet ID", cfg)
 
       let conv = await getTweet(id)
-      
+
       if conv == nil or conv.tweet == nil or conv.tweet.id == 0:
         var error = "Tweet not found"
         if conv != nil and conv.tweet != nil and conv.tweet.tombstone.len > 0:
           error = conv.tweet.tombstone
-        resp Http404, %*{"error": error}
+        resp Http404, showError(error, cfg)
 
       let tweet = conv.tweet
       var response = %* {
@@ -43,19 +44,22 @@ proc createStatusRouter*(cfg: Config) =
 
       # Add photos if present
       if tweet.photos.len > 0:
-        response["photos"] = %tweet.photos
+        var transformedPhotos = %* []
+        for photo in tweet.photos:
+          transformedPhotos.add(%*(getUrlPrefix(cfg) & getPicUrl(photo)))
+        response["photos"] = transformedPhotos
 
       # Add video if present
       if tweet.video.isSome():
         let video = tweet.video.get()
         var videoObj = %* {
-          "thumb": video.thumb,
+          "thumb": getUrlPrefix(cfg) & getPicUrl(video.thumb),
           "url": video.url,
           "duration": video.durationMs,
           "views": video.views
         }
         if video.variants.len > 0:
-          var variants = newJArray()
+          var variants = %* []
           for variant in video.variants:
             variants.add(%* {
               "url": variant.url,
@@ -70,7 +74,7 @@ proc createStatusRouter*(cfg: Config) =
         let gif = tweet.gif.get()
         response["gif"] = %* {
           "url": gif.url,
-          "thumb": gif.thumb
+          "thumb": getUrlPrefix(cfg) & getPicUrl(gif.thumb)
         }
 
       respJson response
